@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getSupabaseAdmin } from "@/lib/supabaseAdmin";
 
 type MercadoLivreTokenResponse = {
   access_token?: string;
@@ -91,13 +92,12 @@ export async function GET(request: NextRequest) {
     const tokenData =
       (await tokenResponse.json()) as MercadoLivreTokenResponse;
 
-    if (!tokenResponse.ok || !tokenData.access_token) {
-      console.error("Erro ao gerar token do Mercado Livre:", {
-        status: tokenResponse.status,
-        error: tokenData.error,
-        description: tokenData.error_description,
-        message: tokenData.message,
-      });
+    if (
+      !tokenResponse.ok ||
+      !tokenData.access_token ||
+      !tokenData.user_id
+    ) {
+      console.error("Erro ao gerar token do Mercado Livre:", tokenData);
 
       return NextResponse.json(
         {
@@ -107,9 +107,50 @@ export async function GET(request: NextRequest) {
             tokenData.error_description ||
             tokenData.message ||
             tokenData.error ||
-            "Erro desconhecido.",
+            "Resposta inválida do Mercado Livre.",
         },
         { status: tokenResponse.status || 400 }
+      );
+    }
+
+    const expiresIn = tokenData.expires_in || 21600;
+    const expiresAt = new Date(
+      Date.now() + expiresIn * 1000
+    ).toISOString();
+
+    const supabaseAdmin = getSupabaseAdmin();
+
+    const { error: saveError } = await supabaseAdmin
+      .from("mercadolivre_connections")
+      .upsert(
+        {
+          ml_user_id: tokenData.user_id,
+          access_token: tokenData.access_token,
+          refresh_token: tokenData.refresh_token || null,
+          token_type: tokenData.token_type || "Bearer",
+          scope: tokenData.scope || null,
+          expires_at: expiresAt,
+          updated_at: new Date().toISOString(),
+        },
+        {
+          onConflict: "ml_user_id",
+        }
+      );
+
+    if (saveError) {
+      console.error(
+        "Erro ao salvar token no Supabase:",
+        saveError
+      );
+
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "O Mercado Livre autorizou, mas não foi possível salvar a conexão no Supabase.",
+          details: saveError.message,
+        },
+        { status: 500 }
       );
     }
 
@@ -117,59 +158,28 @@ export async function GET(request: NextRequest) {
       new URL("/admin?mercadolivre=conectado", request.url)
     );
 
-    const secureCookie = process.env.NODE_ENV === "production";
-    const accessTokenDuration = tokenData.expires_in || 21600;
-
-    response.cookies.set("ml_access_token", tokenData.access_token, {
+    response.cookies.set("ml_user_id", String(tokenData.user_id), {
       httpOnly: true,
-      secure: secureCookie,
+      secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
       path: "/",
-      maxAge: accessTokenDuration,
+      maxAge: 60 * 60 * 24 * 180,
     });
-
-    if (tokenData.refresh_token) {
-      response.cookies.set("ml_refresh_token", tokenData.refresh_token, {
-        httpOnly: true,
-        secure: secureCookie,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 180,
-      });
-    }
-
-    if (tokenData.user_id) {
-      response.cookies.set("ml_user_id", String(tokenData.user_id), {
-        httpOnly: true,
-        secure: secureCookie,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 60 * 60 * 24 * 180,
-      });
-    }
-
-    response.cookies.set(
-      "ml_token_expires_at",
-      String(Date.now() + accessTokenDuration * 1000),
-      {
-        httpOnly: true,
-        secure: secureCookie,
-        sameSite: "lax",
-        path: "/",
-        maxAge: accessTokenDuration,
-      }
-    );
 
     response.cookies.delete("ml_oauth_state");
 
     return response;
   } catch (error) {
-    console.error("Erro na autenticação do Mercado Livre:", error);
+    console.error(
+      "Erro na autenticação do Mercado Livre:",
+      error
+    );
 
     return NextResponse.json(
       {
         success: false,
-        error: "Erro interno durante a autenticação do Mercado Livre.",
+        error:
+          "Erro interno durante a autenticação do Mercado Livre.",
       },
       { status: 500 }
     );
