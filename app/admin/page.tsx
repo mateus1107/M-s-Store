@@ -1,13 +1,16 @@
 "use client";
 
-import { ChangeEvent, FormEvent, useEffect, useState } from "react";
+import type { ChangeEvent, FormEvent } from "react";
+import { useEffect, useState } from "react";
+
 import {
   createProduct,
   deleteProduct,
   getProducts,
   updateProduct,
-} from "@/app/services/products";
-import { uploadProductImage } from "@/lib/storage";
+} from "../services/products";
+
+import { uploadProductImage } from "../../lib/storage";
 
 type Product = {
   id: string;
@@ -31,15 +34,18 @@ export default function AdminPage() {
   const [imagePreview, setImagePreview] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
+
   const [loading, setLoading] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [message, setMessage] = useState("");
 
-  function convertPriceToNumber(value: string) {
+  function convertPriceToNumber(value: string): number {
     const cleanedValue = value.trim().replace(/\s/g, "");
 
     if (cleanedValue.includes(",") && cleanedValue.includes(".")) {
-      return Number(cleanedValue.replace(/\./g, "").replace(",", "."));
+      return Number(
+        cleanedValue.replace(/\./g, "").replace(",", ".")
+      );
     }
 
     if (cleanedValue.includes(",")) {
@@ -50,12 +56,17 @@ export default function AdminPage() {
   }
 
   async function loadProducts() {
-    const data = await getProducts();
-    setProducts(data as Product[]);
+    try {
+      const data = await getProducts();
+      setProducts(data as Product[]);
+    } catch (error) {
+      console.error("Erro ao carregar produtos:", error);
+      setMessage("Não foi possível carregar os produtos.");
+    }
   }
 
   useEffect(() => {
-    loadProducts();
+    void loadProducts();
   }, []);
 
   function clearForm() {
@@ -64,36 +75,66 @@ export default function AdminPage() {
     setImageUrl("");
     setProductUrl("");
     setAffiliateUrl("");
+
     setImageFile(null);
     setImagePreview("");
     setEditingId(null);
   }
 
-  function handleImageChange(event: ChangeEvent<HTMLInputElement>) {
+  function handleImageChange(
+    event: ChangeEvent<HTMLInputElement>
+  ) {
     const file = event.target.files?.[0];
 
-    if (!file) return;
+    if (!file) {
+      return;
+    }
 
     if (!file.type.startsWith("image/")) {
       setMessage("Selecione um arquivo de imagem válido.");
       return;
     }
 
-    if (file.size > 5 * 1024 * 1024) {
+    const maximumSize = 5 * 1024 * 1024;
+
+    if (file.size > maximumSize) {
       setMessage("A imagem deve ter no máximo 5 MB.");
       return;
     }
 
+    if (imagePreview.startsWith("blob:")) {
+      URL.revokeObjectURL(imagePreview);
+    }
+
+    const previewUrl = URL.createObjectURL(file);
+
     setImageFile(file);
-    setImagePreview(URL.createObjectURL(file));
+    setImagePreview(previewUrl);
     setMessage("");
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(
+    event: FormEvent<HTMLFormElement>
+  ) {
     event.preventDefault();
 
-    if (!name || !price || !productUrl || !affiliateUrl) {
-      setMessage("Preencha todos os campos obrigatórios.");
+    if (!name.trim()) {
+      setMessage("Digite o nome do produto.");
+      return;
+    }
+
+    if (!price.trim()) {
+      setMessage("Digite o preço do produto.");
+      return;
+    }
+
+    if (!productUrl.trim()) {
+      setMessage("Digite o link do Mercado Livre.");
+      return;
+    }
+
+    if (!affiliateUrl.trim()) {
+      setMessage("Digite o link de afiliado.");
       return;
     }
 
@@ -104,7 +145,11 @@ export default function AdminPage() {
 
     const numericPrice = convertPriceToNumber(price);
 
-    if (Number.isNaN(numericPrice) || numericPrice <= 0) {
+    if (
+      Number.isNaN(numericPrice) ||
+      !Number.isFinite(numericPrice) ||
+      numericPrice <= 0
+    ) {
       setMessage("Digite um preço válido.");
       return;
     }
@@ -117,16 +162,23 @@ export default function AdminPage() {
 
       if (imageFile) {
         setUploadingImage(true);
+
         finalImageUrl = await uploadProductImage(imageFile);
+
         setUploadingImage(false);
       }
 
+      if (!finalImageUrl) {
+        setMessage("Não foi possível obter a imagem do produto.");
+        return;
+      }
+
       const productData = {
-        name,
+        name: name.trim(),
         price: numericPrice,
         image_url: finalImageUrl,
-        product_url: productUrl,
-        affiliate_url: affiliateUrl,
+        product_url: productUrl.trim(),
+        affiliate_url: affiliateUrl.trim(),
       };
 
       if (editingId) {
@@ -140,22 +192,29 @@ export default function AdminPage() {
       clearForm();
       await loadProducts();
     } catch (error) {
-      console.error(error);
-      setUploadingImage(false);
-      setMessage("Não foi possível salvar o produto.");
+      console.error("Erro ao salvar produto:", error);
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível salvar o produto."
+      );
     } finally {
+      setUploadingImage(false);
       setLoading(false);
     }
   }
 
   function handleEdit(product: Product) {
     setEditingId(product.id);
+
     setName(product.name);
     setPrice(String(product.price).replace(".", ","));
     setImageUrl(product.image_url);
     setImagePreview(product.image_url);
     setProductUrl(product.product_url);
     setAffiliateUrl(product.affiliate_url);
+
     setImageFile(null);
     setMessage("");
 
@@ -170,32 +229,46 @@ export default function AdminPage() {
       "Tem certeza que deseja excluir este produto?"
     );
 
-    if (!confirmed) return;
+    if (!confirmed) {
+      return;
+    }
 
     try {
+      setLoading(true);
+      setMessage("");
+
       await deleteProduct(id);
+
       setMessage("Produto excluído com sucesso!");
       await loadProducts();
     } catch (error) {
-      console.error(error);
-      setMessage("Não foi possível excluir o produto.");
+      console.error("Erro ao excluir produto:", error);
+
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível excluir o produto."
+      );
+    } finally {
+      setLoading(false);
     }
   }
 
   return (
-    <main className="min-h-screen bg-gray-100 p-8">
+    <main className="min-h-screen bg-gray-100 p-4 md:p-8">
       <div className="mx-auto max-w-6xl">
-        <h1 className="mb-8 text-4xl font-bold text-yellow-500">
+        <h1 className="mb-8 text-3xl font-bold text-yellow-500 md:text-4xl">
           Painel Administrativo
         </h1>
 
-        <div className="mb-10 rounded-xl bg-white p-8 shadow-lg">
+        <section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
           <h2 className="mb-6 text-2xl font-semibold">
             {editingId ? "Editar Produto" : "Adicionar Produto"}
           </h2>
 
           <form className="grid gap-4" onSubmit={handleSubmit}>
             <input
+              type="text"
               className="rounded-lg border p-3"
               placeholder="Nome do produto"
               value={name}
@@ -203,6 +276,7 @@ export default function AdminPage() {
             />
 
             <input
+              type="text"
               className="rounded-lg border p-3"
               placeholder="Preço — exemplo: 2999,90"
               value={price}
@@ -236,17 +310,23 @@ export default function AdminPage() {
             </div>
 
             <input
+              type="url"
               className="rounded-lg border p-3"
               placeholder="Link do Mercado Livre"
               value={productUrl}
-              onChange={(event) => setProductUrl(event.target.value)}
+              onChange={(event) =>
+                setProductUrl(event.target.value)
+              }
             />
 
             <input
+              type="url"
               className="rounded-lg border p-3"
               placeholder="Link de afiliado"
               value={affiliateUrl}
-              onChange={(event) => setAffiliateUrl(event.target.value)}
+              onChange={(event) =>
+                setAffiliateUrl(event.target.value)
+              }
             />
 
             <button
@@ -259,15 +339,16 @@ export default function AdminPage() {
                 : loading
                   ? "Salvando..."
                   : editingId
-                    ? "Salvar Alterações"
-                    : "Adicionar Produto"}
+                    ? "Salvar alterações"
+                    : "Adicionar produto"}
             </button>
 
             {editingId && (
               <button
                 type="button"
                 onClick={clearForm}
-                className="rounded-lg border p-3 font-bold"
+                disabled={loading}
+                className="rounded-lg border p-3 font-bold disabled:opacity-60"
               >
                 Cancelar edição
               </button>
@@ -279,9 +360,9 @@ export default function AdminPage() {
               </p>
             )}
           </form>
-        </div>
+        </section>
 
-        <div className="rounded-xl bg-white p-8 shadow-lg">
+        <section className="rounded-xl bg-white p-5 shadow-lg md:p-8">
           <h2 className="mb-6 text-2xl font-semibold">
             Produtos cadastrados
           </h2>
@@ -291,7 +372,7 @@ export default function AdminPage() {
           ) : (
             <div className="grid gap-4">
               {products.map((product) => (
-                <div
+                <article
                   key={product.id}
                   className="flex flex-col gap-4 rounded-lg border p-4 md:flex-row md:items-center md:justify-between"
                 >
@@ -303,13 +384,18 @@ export default function AdminPage() {
                     />
 
                     <div>
-                      <h3 className="text-lg font-bold">{product.name}</h3>
+                      <h3 className="text-lg font-bold">
+                        {product.name}
+                      </h3>
 
                       <p className="text-green-600">
-                        {Number(product.price).toLocaleString("pt-BR", {
-                          style: "currency",
-                          currency: "BRL",
-                        })}
+                        {Number(product.price).toLocaleString(
+                          "pt-BR",
+                          {
+                            style: "currency",
+                            currency: "BRL",
+                          }
+                        )}
                       </p>
                     </div>
                   </div>
@@ -318,7 +404,8 @@ export default function AdminPage() {
                     <button
                       type="button"
                       onClick={() => handleEdit(product)}
-                      className="rounded-lg bg-blue-600 px-4 py-2 font-bold text-white"
+                      disabled={loading}
+                      className="rounded-lg bg-blue-600 px-4 py-2 font-bold text-white disabled:opacity-60"
                     >
                       Editar
                     </button>
@@ -326,16 +413,17 @@ export default function AdminPage() {
                     <button
                       type="button"
                       onClick={() => handleDelete(product.id)}
-                      className="rounded-lg bg-red-600 px-4 py-2 font-bold text-white"
+                      disabled={loading}
+                      className="rounded-lg bg-red-600 px-4 py-2 font-bold text-white disabled:opacity-60"
                     >
                       Excluir
                     </button>
                   </div>
-                </div>
+                </article>
               ))}
             </div>
           )}
-        </div>
+        </section>
       </div>
     </main>
   );
