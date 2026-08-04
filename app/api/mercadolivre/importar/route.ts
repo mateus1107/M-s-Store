@@ -187,7 +187,23 @@ async function importProducts(request: NextRequest) {
         )
       )
     );
-
+console.log(
+  "DIAGNOSTICO_CAMPOS_CATALOGO_ML",
+  catalogResults.map((product) => ({
+    id: product?.id || null,
+    status: product?.status || null,
+    name: product?.name || null,
+    familyName: product?.family_name || null,
+    permalink: product?.permalink || null,
+    quantidadeFotos: product?.pictures?.length || 0,
+    temBuyBox: Boolean(product?.buy_box_winner),
+    price: product?.buy_box_winner?.price ?? null,
+    originalPrice:
+      product?.buy_box_winner?.original_price ?? null,
+    categoryId:
+      product?.buy_box_winner?.category_id || null,
+  }))
+);
     const products = catalogResults
       .filter(
         (
