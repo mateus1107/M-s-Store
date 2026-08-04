@@ -35,6 +35,97 @@ type MultiGetResult = {
   body?: MercadoLivreItem;
 };
 
+type CatalogProductResponse = {
+  buy_box_winner?: {
+    item_id?: string;
+  } | null;
+};
+
+type UserProductResponse = {
+  user_id?: number | string;
+};
+
+type UserProductItemsResponse = {
+  results?: string[];
+};
+
+async function fetchMercadoLivreJson<T>(
+  url: string,
+  accessToken: string
+): Promise<T | null> {
+  try {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      console.warn(
+        `Mercado Livre respondeu ${response.status} ao consultar ${url}`
+      );
+      return null;
+    }
+
+    return (await response.json()) as T;
+  } catch (error) {
+    console.warn(
+      `Falha ao consultar ${url}:`,
+      error
+    );
+    return null;
+  }
+}
+
+async function resolveHighlightToItemId(
+  entry: HighlightEntry,
+  accessToken: string
+): Promise<string | null> {
+  if (entry.type === "ITEM") {
+    return entry.id;
+  }
+
+  if (entry.type === "PRODUCT") {
+    const product =
+      await fetchMercadoLivreJson<CatalogProductResponse>(
+        `https://api.mercadolibre.com/products/${entry.id}`,
+        accessToken
+      );
+
+    return product?.buy_box_winner?.item_id || null;
+  }
+
+  const userProduct =
+    await fetchMercadoLivreJson<UserProductResponse>(
+      `https://api.mercadolibre.com/user-products/${entry.id}`,
+      accessToken
+    );
+
+  if (!userProduct?.user_id) {
+    return null;
+  }
+
+  const itemsUrl = new URL(
+    `https://api.mercadolibre.com/users/${userProduct.user_id}/items/search`
+  );
+
+  itemsUrl.searchParams.set(
+    "user_product_id",
+    entry.id
+  );
+
+  const itemSearch =
+    await fetchMercadoLivreJson<UserProductItemsResponse>(
+      itemsUrl.toString(),
+      accessToken
+    );
+
+  return itemSearch?.results?.[0] || null;
+}
+
 async function importProducts(request: NextRequest) {
   const mercadoLivreUserId =
     request.cookies.get("ml_user_id")?.value;
@@ -91,20 +182,41 @@ async function importProducts(request: NextRequest) {
       );
     }
 
-    const itemIds = (highlightsData.content || [])
-      .filter((entry) => entry.type === "ITEM")
-      .sort((first, second) => first.position - second.position)
-      .map((entry) => entry.id)
+    const orderedHighlights = (
+      highlightsData.content || []
+    )
+      .sort(
+        (first, second) =>
+          first.position - second.position
+      )
       .slice(0, 20);
+
+    const resolvedItemIds = await Promise.all(
+      orderedHighlights.map((entry) =>
+        resolveHighlightToItemId(
+          entry,
+          accessToken
+        )
+      )
+    );
+
+    const itemIds = [
+      ...new Set(
+        resolvedItemIds.filter(
+          (itemId): itemId is string =>
+            Boolean(itemId)
+        )
+      ),
+    ].slice(0, 20);
 
     if (itemIds.length === 0) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "O ranking consultado não retornou anúncios do tipo ITEM.",
+            "O ranking foi encontrado, mas nenhum anúncio ativo pôde ser convertido para importação.",
           details:
-            "Os resultados encontrados eram produtos de catálogo. Eles serão adicionados na próxima etapa.",
+            "Os resultados eram produtos de catálogo ou User Products sem uma publicação acessível no momento.",
         },
         { status: 404 }
       );
@@ -147,7 +259,8 @@ async function importProducts(request: NextRequest) {
     );
 
     if (!itemDetailsResponse.ok) {
-      const errorText = await itemDetailsResponse.text();
+      const errorText =
+        await itemDetailsResponse.text();
 
       return NextResponse.json(
         {
@@ -212,7 +325,6 @@ async function importProducts(request: NextRequest) {
            * que realmente gera comissão.
            */
           affiliate_url: null,
-
           product_url: item.permalink,
           active: item.status === "active",
           updated_at: new Date().toISOString(),
@@ -238,14 +350,16 @@ async function importProducts(request: NextRequest) {
 
     const supabaseAdmin = getSupabaseAdmin();
 
-    const { data: savedProducts, error: saveError } =
-      await supabaseAdmin
-        .from("products")
-        .upsert(products, {
-          onConflict: "ml_id",
-          ignoreDuplicates: false,
-        })
-        .select("id, ml_id, name, price");
+    const {
+      data: savedProducts,
+      error: saveError,
+    } = await supabaseAdmin
+      .from("products")
+      .upsert(products, {
+        onConflict: "ml_id",
+        ignoreDuplicates: false,
+      })
+      .select("id, ml_id, name, price");
 
     if (saveError) {
       console.error(
@@ -266,7 +380,9 @@ async function importProducts(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `${savedProducts?.length || 0} produtos foram importados ou atualizados.`,
+      message: `${
+        savedProducts?.length || 0
+      } produtos foram importados ou atualizados.`,
       imported: savedProducts?.length || 0,
       products: savedProducts || [],
       affiliateLinks:
@@ -291,10 +407,14 @@ async function importProducts(request: NextRequest) {
   }
 }
 
-export async function GET(request: NextRequest) {
+export async function GET(
+  request: NextRequest
+) {
   return importProducts(request);
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(
+  request: NextRequest
+) {
   return importProducts(request);
 }
