@@ -35,18 +35,12 @@ type MultiGetResult = {
   body?: MercadoLivreItem;
 };
 
-type CatalogProductResponse = {
-  buy_box_winner?: {
+type CatalogProductItemsResponse = {
+  results?: Array<{
     item_id?: string;
-  } | null;
-};
-
-type UserProductResponse = {
-  user_id?: number | string;
-};
-
-type UserProductItemsResponse = {
-  results?: string[];
+    status?: string;
+    buy_box_winner?: boolean;
+  }>;
 };
 
 async function fetchMercadoLivreJson<T>(
@@ -89,41 +83,44 @@ async function resolveHighlightToItemId(
   }
 
   if (entry.type === "PRODUCT") {
-    const product =
-      await fetchMercadoLivreJson<CatalogProductResponse>(
-        `https://api.mercadolibre.com/products/${entry.id}`,
+    const catalogItems =
+      await fetchMercadoLivreJson<CatalogProductItemsResponse>(
+        `https://api.mercadolibre.com/products/${entry.id}/items`,
         accessToken
       );
 
-    return product?.buy_box_winner?.item_id || null;
-  }
+    const results = catalogItems?.results || [];
 
-  const userProduct =
-    await fetchMercadoLivreJson<UserProductResponse>(
-      `https://api.mercadolibre.com/user-products/${entry.id}`,
-      accessToken
+    const winner = results.find(
+      (item) =>
+        item.buy_box_winner === true &&
+        Boolean(item.item_id)
     );
 
-  if (!userProduct?.user_id) {
-    return null;
-  }
+    if (winner?.item_id) {
+      return winner.item_id;
+    }
 
-  const itemsUrl = new URL(
-    `https://api.mercadolibre.com/users/${userProduct.user_id}/items/search`
-  );
-
-  itemsUrl.searchParams.set(
-    "user_product_id",
-    entry.id
-  );
-
-  const itemSearch =
-    await fetchMercadoLivreJson<UserProductItemsResponse>(
-      itemsUrl.toString(),
-      accessToken
+    const activeItem = results.find(
+      (item) =>
+        item.status === "active" &&
+        Boolean(item.item_id)
     );
 
-  return itemSearch?.results?.[0] || null;
+    return (
+      activeItem?.item_id ||
+      results.find((item) => Boolean(item.item_id))
+        ?.item_id ||
+      null
+    );
+  }
+
+  /*
+   * O endpoint /user-products/{id} devolve 403 para
+   * User Products de outros vendedores. Como o ranking
+   * não informa o seller_id, esses registros são ignorados.
+   */
+  return null;
 }
 
 async function importProducts(request: NextRequest) {
@@ -216,7 +213,7 @@ async function importProducts(request: NextRequest) {
           error:
             "O ranking foi encontrado, mas nenhum anúncio ativo pôde ser convertido para importação.",
           details:
-            "Os resultados eram produtos de catálogo ou User Products sem uma publicação acessível no momento.",
+            "Os resultados eram User Products sem acesso público ou produtos de catálogo sem publicação disponível.",
         },
         { status: 404 }
       );
@@ -385,6 +382,9 @@ async function importProducts(request: NextRequest) {
       } produtos foram importados ou atualizados.`,
       imported: savedProducts?.length || 0,
       products: savedProducts || [],
+      skippedUserProducts: orderedHighlights.filter(
+        (entry) => entry.type === "USER_PRODUCT"
+      ).length,
       affiliateLinks:
         "pendentes — os links comuns não foram salvos como links de comissão",
     });
