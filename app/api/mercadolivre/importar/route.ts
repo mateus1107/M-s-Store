@@ -276,7 +276,7 @@ async function importProducts(request: NextRequest) {
     const products = itemResults
       .filter(
         (result) =>
-          result.code === 200 &&
+          (result.code === 200 || result.code === 206) &&
           result.body?.id &&
           result.body?.title &&
           result.body?.price &&
