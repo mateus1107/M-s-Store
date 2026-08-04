@@ -31,8 +31,10 @@ export default function AdminPage() {
   const [affiliateUrl, setAffiliateUrl] = useState("");
 
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState("");
-
+ const [mlLoading, setMlLoading] = useState(false);
+const [mlMessage, setMlMessage] = useState("");
+ const [imagePreview, setImagePreview] = useState("");
+  
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(false);
@@ -253,14 +255,85 @@ export default function AdminPage() {
       setLoading(false);
     }
   }
+  function handleConnectMercadoLivre() {
+    window.location.href = "/api/auth/mercadolivre";
+  }
 
+  async function handleImportMercadoLivre() {
+    try {
+      setMlLoading(true);
+      setMlMessage("");
+
+      const response = await fetch("/api/mercadolivre/importar", {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            data.message ||
+            "Não foi possível importar os produtos."
+        );
+      }
+
+      setMlMessage(
+        data.message || "Produtos importados com sucesso do Mercado Livre."
+      );
+
+      const updatedProducts = await getProducts();
+      setProducts(updatedProducts);
+    } catch (error) {
+      setMlMessage(
+        error instanceof Error
+          ? error.message
+          : "Ocorreu um erro ao importar os produtos."
+      );
+    } finally {
+      setMlLoading(false);
+    }
+  }
   return (
     <main className="min-h-screen bg-gray-100 p-4 md:p-8">
       <div className="mx-auto max-w-6xl">
         <h1 className="mb-8 text-3xl font-bold text-yellow-500 md:text-4xl">
           Painel Administrativo
         </h1>
+<section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
+  <h2 className="mb-2 text-2xl font-semibold">
+    Integração com o Mercado Livre
+  </h2>
 
+  <p className="mb-5 text-gray-600">
+    Conecte sua conta e importe produtos automaticamente para a M&S Store.
+  </p>
+
+  <div className="flex flex-col gap-3 sm:flex-row">
+    <button
+      type="button"
+      onClick={handleConnectMercadoLivre}
+      className="rounded-lg bg-yellow-500 px-5 py-3 font-bold text-black hover:bg-yellow-600"
+    >
+      Conectar Mercado Livre
+    </button>
+
+    <button
+      type="button"
+      onClick={handleImportMercadoLivre}
+      disabled={mlLoading}
+      className="rounded-lg bg-blue-600 px-5 py-3 font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      {mlLoading ? "Importando produtos..." : "Importar produtos"}
+    </button>
+  </div>
+
+  {mlMessage && (
+    <p className="mt-4 rounded-lg bg-gray-100 p-3 font-medium">
+      {mlMessage}
+    </p>
+  )}
+</section>
         <section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
           <h2 className="mb-6 text-2xl font-semibold">
             {editingId ? "Editar Produto" : "Adicionar Produto"}
