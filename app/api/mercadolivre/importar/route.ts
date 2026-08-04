@@ -272,7 +272,19 @@ async function importProducts(request: NextRequest) {
 
     const itemResults =
       (await itemDetailsResponse.json()) as MultiGetResult[];
-
+console.log(
+  "DIAGNOSTICO_ITENS_ML",
+  itemResults.map((result) => ({
+    code: result.code,
+    id: result.body?.id || null,
+    temTitulo: Boolean(result.body?.title),
+    price: result.body?.price ?? null,
+    temPermalink: Boolean(result.body?.permalink),
+    temThumbnail: Boolean(result.body?.thumbnail),
+    quantidadeFotos: result.body?.pictures?.length || 0,
+    status: result.body?.status || null,
+  }))
+);
     const products = itemResults
       .filter(
         (result) =>
