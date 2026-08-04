@@ -15,112 +15,66 @@ type HighlightsResponse = {
   error?: string;
 };
 
-type MercadoLivreItem = {
+type CatalogPicture = {
   id?: string;
-  title?: string;
-  price?: number;
-  original_price?: number | null;
-  thumbnail?: string;
-  pictures?: Array<{
-    secure_url?: string;
-    url?: string;
-  }>;
-  permalink?: string;
+  url?: string;
+  secure_url?: string;
+};
+
+type CatalogProduct = {
+  id?: string;
   status?: string;
-  category_id?: string;
-};
-
-type MultiGetResult = {
-  code: number;
-  body?: MercadoLivreItem;
-};
-
-type CatalogProductItemsResponse = {
-  results?: Array<{
+  domain_id?: string;
+  permalink?: string;
+  name?: string;
+  family_name?: string;
+  pictures?: CatalogPicture[];
+  short_description?: {
+    content?: string;
+  } | null;
+  buy_box_winner?: {
     item_id?: string;
-    status?: string;
-    buy_box_winner?: boolean;
-  }>;
+    category_id?: string;
+    price?: number;
+    original_price?: number | null;
+    currency_id?: string;
+    condition?: string;
+    available_quantity?: number;
+  } | null;
 };
 
-async function fetchMercadoLivreJson<T>(
-  url: string,
+async function fetchCatalogProduct(
+  productId: string,
   accessToken: string
-): Promise<T | null> {
+): Promise<CatalogProduct | null> {
   try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      cache: "no-store",
-    });
+    const response = await fetch(
+      `https://api.mercadolibre.com/products/${productId}`,
+      {
+        method: "GET",
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        cache: "no-store",
+      }
+    );
 
     if (!response.ok) {
       console.warn(
-        `Mercado Livre respondeu ${response.status} ao consultar ${url}`
+        `CATALOGO_ML_ERRO product_id=${productId} status=${response.status}`
       );
       return null;
     }
 
-    return (await response.json()) as T;
+    return (await response.json()) as CatalogProduct;
   } catch (error) {
     console.warn(
-      `Falha ao consultar ${url}:`,
+      `CATALOGO_ML_FALHA product_id=${productId}`,
       error
     );
     return null;
   }
-}
-
-async function resolveHighlightToItemId(
-  entry: HighlightEntry,
-  accessToken: string
-): Promise<string | null> {
-  if (entry.type === "ITEM") {
-    return entry.id;
-  }
-
-  if (entry.type === "PRODUCT") {
-    const catalogItems =
-      await fetchMercadoLivreJson<CatalogProductItemsResponse>(
-        `https://api.mercadolibre.com/products/${entry.id}/items`,
-        accessToken
-      );
-
-    const results = catalogItems?.results || [];
-
-    const winner = results.find(
-      (item) =>
-        item.buy_box_winner === true &&
-        Boolean(item.item_id)
-    );
-
-    if (winner?.item_id) {
-      return winner.item_id;
-    }
-
-    const activeItem = results.find(
-      (item) =>
-        item.status === "active" &&
-        Boolean(item.item_id)
-    );
-
-    return (
-      activeItem?.item_id ||
-      results.find((item) => Boolean(item.item_id))
-        ?.item_id ||
-      null
-    );
-  }
-
-  /*
-   * O endpoint /user-products/{id} devolve 403 para
-   * User Products de outros vendedores. Como o ranking
-   * não informa o seller_id, esses registros são ignorados.
-   */
-  return null;
 }
 
 async function importProducts(request: NextRequest) {
@@ -144,7 +98,7 @@ async function importProducts(request: NextRequest) {
       await getMercadoLivreAccessToken();
 
     /*
-     * Categoria utilizada inicialmente pelo recurso oficial
+     * Categoria inicial usada pelo ranking oficial
      * de produtos mais vendidos.
      */
     const categoryId = "MLB432825";
@@ -181,132 +135,82 @@ async function importProducts(request: NextRequest) {
 
     const orderedHighlights = (
       highlightsData.content || []
-    )
-      .sort(
-        (first, second) =>
-          first.position - second.position
-      )
-      .slice(0, 20);
-
-    const resolvedItemIds = await Promise.all(
-      orderedHighlights.map((entry) =>
-        resolveHighlightToItemId(
-          entry,
-          accessToken
-        )
-      )
+    ).sort(
+      (first, second) =>
+        first.position - second.position
     );
 
-    const itemIds = [
+    /*
+     * O endpoint /items está devolvendo 403 para anúncios
+     * de outros vendedores. Por isso importamos diretamente
+     * os PRODUCTs de catálogo usando /products/{product_id},
+     * que já fornece nome, imagem, permalink e buy_box_winner.
+     */
+    const catalogProductIds = [
       ...new Set(
-        resolvedItemIds.filter(
-          (itemId): itemId is string =>
-            Boolean(itemId)
-        )
+        orderedHighlights
+          .filter(
+            (entry) => entry.type === "PRODUCT"
+          )
+          .map((entry) => entry.id)
       ),
     ].slice(0, 20);
 
-    if (itemIds.length === 0) {
+    if (catalogProductIds.length === 0) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "O ranking foi encontrado, mas nenhum anúncio ativo pôde ser convertido para importação.",
+            "O ranking atual não retornou produtos de catálogo importáveis.",
           details:
-            "Os resultados eram User Products sem acesso público ou produtos de catálogo sem publicação disponível.",
+            "Os resultados eram ITEM ou USER_PRODUCT, cujos detalhes de terceiros estão bloqueados com erro 403 para esta aplicação.",
+          ranking: {
+            item: orderedHighlights.filter(
+              (entry) => entry.type === "ITEM"
+            ).length,
+            product: 0,
+            userProduct: orderedHighlights.filter(
+              (entry) =>
+                entry.type === "USER_PRODUCT"
+            ).length,
+          },
         },
         { status: 404 }
       );
     }
 
-    const itemDetailsUrl = new URL(
-      "https://api.mercadolibre.com/items"
-    );
-
-    itemDetailsUrl.searchParams.set(
-      "ids",
-      itemIds.join(",")
-    );
-
-    itemDetailsUrl.searchParams.set(
-      "attributes",
-      [
-        "id",
-        "title",
-        "price",
-        "original_price",
-        "thumbnail",
-        "pictures",
-        "permalink",
-        "status",
-        "category_id",
-      ].join(",")
-    );
-
-    const itemDetailsResponse = await fetch(
-      itemDetailsUrl,
-      {
-        method: "GET",
-        headers: {
-          Accept: "application/json",
-          Authorization: `Bearer ${accessToken}`,
-        },
-        cache: "no-store",
-      }
-    );
-
-    if (!itemDetailsResponse.ok) {
-      const errorText =
-        await itemDetailsResponse.text();
-
-      return NextResponse.json(
-        {
-          success: false,
-          error:
-            "Não foi possível consultar os detalhes dos produtos.",
-          details: errorText,
-        },
-        { status: itemDetailsResponse.status }
-      );
-    }
-
-    const itemResults =
-      (await itemDetailsResponse.json()) as MultiGetResult[];
-console.log(
-  "DIAGNOSTICO_ITENS_ML",
-  itemResults.map((result) => ({
-    code: result.code,
-    id: result.body?.id || null,
-    temTitulo: Boolean(result.body?.title),
-    price: result.body?.price ?? null,
-    temPermalink: Boolean(result.body?.permalink),
-    temThumbnail: Boolean(result.body?.thumbnail),
-    quantidadeFotos: result.body?.pictures?.length || 0,
-    status: result.body?.status || null,
-  }))
-);
-    const products = itemResults
-      .filter(
-        (result) =>
-          (result.code === 200 || result.code === 206) &&
-          result.body?.id &&
-          result.body?.title &&
-          result.body?.price &&
-          result.body?.permalink
+    const catalogResults = await Promise.all(
+      catalogProductIds.map((productId) =>
+        fetchCatalogProduct(
+          productId,
+          accessToken
+        )
       )
-      .map((result) => {
-        const item = result.body as Required<
-          Pick<
-            MercadoLivreItem,
-            "id" | "title" | "price" | "permalink"
-          >
-        > &
-          MercadoLivreItem;
+    );
 
+    const products = catalogResults
+      .filter(
+        (
+          product
+        ): product is CatalogProduct & {
+          id: string;
+          name: string;
+          permalink: string;
+          buy_box_winner: {
+            price: number;
+          };
+        } =>
+          Boolean(
+            product?.id &&
+              product.name &&
+              product.permalink &&
+              product.buy_box_winner?.price
+          )
+      )
+      .map((product) => {
         const firstPicture =
-          item.pictures?.[0]?.secure_url ||
-          item.pictures?.[0]?.url ||
-          item.thumbnail ||
+          product.pictures?.[0]?.secure_url ||
+          product.pictures?.[0]?.url ||
           "";
 
         const imageUrl = firstPicture.replace(
@@ -314,28 +218,48 @@ console.log(
           "https:"
         );
 
-        return {
-          ml_id: item.id,
-          name: item.title,
-          description: null,
-          category:
-            item.category_id || "Mercado Livre",
-          image_url: imageUrl,
-          price: Number(item.price),
-          old_price:
-            item.original_price !== null &&
-            item.original_price !== undefined
-              ? Number(item.original_price)
-              : null,
+        const currentPrice = Number(
+          product.buy_box_winner.price
+        );
 
+        const originalPriceValue =
+          product.buy_box_winner.original_price;
+
+        const originalPrice =
+          originalPriceValue !== null &&
+          originalPriceValue !== undefined &&
+          Number.isFinite(
+            Number(originalPriceValue)
+          )
+            ? Number(originalPriceValue)
+            : null;
+
+        return {
           /*
-           * Não colocaremos o link comum no campo de afiliado.
-           * Isso evita confundir um link normal com um link
-           * que realmente gera comissão.
+           * Aqui o ml_id será o ID do produto de catálogo,
+           * porque o endpoint /items está bloqueado para
+           * publicações de terceiros.
            */
+          ml_id: product.id,
+          name: product.name,
+          description:
+            product.short_description?.content ||
+            null,
+          category:
+            product.buy_box_winner
+              ?.category_id ||
+            product.domain_id ||
+            "Mercado Livre",
+          image_url: imageUrl,
+          price: currentPrice,
+          old_price:
+            originalPrice &&
+            originalPrice > currentPrice
+              ? originalPrice
+              : null,
           affiliate_url: null,
-          product_url: item.permalink,
-          active: item.status === "active",
+          product_url: product.permalink,
+          active: product.status === "active",
           updated_at: new Date().toISOString(),
         };
       })
@@ -346,18 +270,34 @@ console.log(
           product.price > 0
       );
 
+    console.log(
+      "DIAGNOSTICO_CATALOGO_ML",
+      {
+        rankingTotal:
+          orderedHighlights.length,
+        catalogProductIds:
+          catalogProductIds.length,
+        catalogResponses:
+          catalogResults.filter(Boolean).length,
+        validProducts: products.length,
+      }
+    );
+
     if (products.length === 0) {
       return NextResponse.json(
         {
           success: false,
           error:
-            "Nenhum produto válido foi encontrado para cadastro.",
+            "Os produtos de catálogo foram consultados, mas nenhum tinha todos os dados necessários para cadastro.",
+          details:
+            "É necessário nome, imagem, preço e permalink.",
         },
         { status: 404 }
       );
     }
 
-    const supabaseAdmin = getSupabaseAdmin();
+    const supabaseAdmin =
+      getSupabaseAdmin();
 
     const {
       data: savedProducts,
@@ -368,11 +308,13 @@ console.log(
         onConflict: "ml_id",
         ignoreDuplicates: false,
       })
-      .select("id, ml_id, name, price");
+      .select(
+        "id, ml_id, name, price"
+      );
 
     if (saveError) {
       console.error(
-        "Erro ao cadastrar produtos automáticos:",
+        "Erro ao cadastrar produtos de catálogo:",
         saveError
       );
 
@@ -391,14 +333,23 @@ console.log(
       success: true,
       message: `${
         savedProducts?.length || 0
-      } produtos foram importados ou atualizados.`,
-      imported: savedProducts?.length || 0,
-      products: savedProducts || [],
-      skippedUserProducts: orderedHighlights.filter(
-        (entry) => entry.type === "USER_PRODUCT"
-      ).length,
+      } produtos de catálogo foram importados ou atualizados.`,
+      imported:
+        savedProducts?.length || 0,
+      products:
+        savedProducts || [],
+      skipped: {
+        item: orderedHighlights.filter(
+          (entry) => entry.type === "ITEM"
+        ).length,
+        userProduct:
+          orderedHighlights.filter(
+            (entry) =>
+              entry.type === "USER_PRODUCT"
+          ).length,
+      },
       affiliateLinks:
-        "pendentes — os links comuns não foram salvos como links de comissão",
+        "pendentes — a API não gera automaticamente links de afiliado",
     });
   } catch (error) {
     console.error(
