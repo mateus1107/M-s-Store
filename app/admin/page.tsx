@@ -31,9 +31,11 @@ export default function AdminPage() {
   const [affiliateUrl, setAffiliateUrl] = useState("");
 
   const [imageFile, setImageFile] = useState<File | null>(null);
- const [mlLoading, setMlLoading] = useState(false);
-const [mlMessage, setMlMessage] = useState("");
- const [imagePreview, setImagePreview] = useState("");
+  const [imagePreview, setImagePreview] = useState("");
+
+  const [bulkProducts, setBulkProducts] = useState("");
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [bulkMessage, setBulkMessage] = useState("");
   
   const [editingId, setEditingId] = useState<string | null>(null);
 
@@ -55,6 +57,103 @@ const [mlMessage, setMlMessage] = useState("");
     }
 
     return Number(cleanedValue);
+  }
+
+  function isValidUrl(value: string): boolean {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }
+
+  function parseBulkProducts(value: string) {
+    const validProducts: Array<{
+      lineNumber: number;
+      data: {
+        name: string;
+        price: number;
+        image_url: string;
+        product_url: string;
+        affiliate_url: string;
+      };
+    }> = [];
+
+    const errors: string[] = [];
+
+    const lines = value
+      .split(/\r?\n/)
+      .map((line, index) => ({
+        content: line.trim(),
+        lineNumber: index + 1,
+      }))
+      .filter((line) => line.content.length > 0);
+
+    for (const line of lines) {
+      const fields = line.content
+        .split("|")
+        .map((field) => field.trim());
+
+      if (fields.length !== 5) {
+        errors.push(
+          `Linha ${line.lineNumber}: use 5 campos separados por |.`
+        );
+        continue;
+      }
+
+      const [
+        productName,
+        productPrice,
+        productImageUrl,
+        productLink,
+        productAffiliateLink,
+      ] = fields;
+
+      const numericPrice = convertPriceToNumber(productPrice);
+
+      if (!productName) {
+        errors.push(`Linha ${line.lineNumber}: nome não informado.`);
+        continue;
+      }
+
+      if (
+        Number.isNaN(numericPrice) ||
+        !Number.isFinite(numericPrice) ||
+        numericPrice <= 0
+      ) {
+        errors.push(`Linha ${line.lineNumber}: preço inválido.`);
+        continue;
+      }
+
+      if (!isValidUrl(productImageUrl)) {
+        errors.push(`Linha ${line.lineNumber}: URL da imagem inválida.`);
+        continue;
+      }
+
+      if (!isValidUrl(productLink)) {
+        errors.push(`Linha ${line.lineNumber}: link do produto inválido.`);
+        continue;
+      }
+
+      if (!isValidUrl(productAffiliateLink)) {
+        errors.push(`Linha ${line.lineNumber}: link de afiliado inválido.`);
+        continue;
+      }
+
+      validProducts.push({
+        lineNumber: line.lineNumber,
+        data: {
+          name: productName,
+          price: numericPrice,
+          image_url: productImageUrl,
+          product_url: productLink,
+          affiliate_url: productAffiliateLink,
+        },
+      });
+    }
+
+    return { validProducts, errors };
   }
 
   async function loadProducts() {
@@ -255,85 +354,128 @@ const [mlMessage, setMlMessage] = useState("");
       setLoading(false);
     }
   }
-  function handleConnectMercadoLivre() {
-    window.location.href = "/api/auth/mercadolivre";
-  }
+  async function handleBulkImport() {
+    setBulkMessage("");
 
-  async function handleImportMercadoLivre() {
+    if (!bulkProducts.trim()) {
+      setBulkMessage("Cole pelo menos uma linha de produto.");
+      return;
+    }
+
+    const { validProducts, errors } =
+      parseBulkProducts(bulkProducts);
+
+    if (errors.length > 0) {
+      setBulkMessage(errors.slice(0, 8).join("\n"));
+      return;
+    }
+
+    if (validProducts.length === 0) {
+      setBulkMessage("Nenhum produto válido foi encontrado.");
+      return;
+    }
+
     try {
-      setMlLoading(true);
-      setMlMessage("");
+      setBulkLoading(true);
 
-      const response = await fetch("/api/mercadolivre/importar", {
-        method: "POST",
-      });
+      let importedCount = 0;
+      const failedLines: string[] = [];
 
-      const data = await response.json();
+      for (const product of validProducts) {
+        try {
+          await createProduct(product.data);
+          importedCount += 1;
+        } catch (error) {
+          console.error(
+            `Erro ao importar a linha ${product.lineNumber}:`,
+            error
+          );
 
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-            data.message ||
-            "Não foi possível importar os produtos."
-        );
+          failedLines.push(
+            `Linha ${product.lineNumber}: ${
+              error instanceof Error
+                ? error.message
+                : "não foi possível cadastrar."
+            }`
+          );
+        }
       }
 
-      setMlMessage(
-        data.message || "Produtos importados com sucesso do Mercado Livre."
-      );
+      await loadProducts();
 
-      const updatedProducts = await getProducts();
-      setProducts(updatedProducts);
+      if (failedLines.length > 0) {
+        setBulkMessage(
+          `${importedCount} produto(s) importado(s). Falhas:\n${failedLines
+            .slice(0, 8)
+            .join("\n")}`
+        );
+        return;
+      }
+
+      setBulkProducts("");
+      setBulkMessage(
+        `${importedCount} produto(s) importado(s) com sucesso!`
+      );
     } catch (error) {
-      setMlMessage(
+      console.error("Erro na importação em lote:", error);
+
+      setBulkMessage(
         error instanceof Error
           ? error.message
-          : "Ocorreu um erro ao importar os produtos."
+          : "Não foi possível concluir a importação em lote."
       );
     } finally {
-      setMlLoading(false);
+      setBulkLoading(false);
     }
   }
+
   return (
     <main className="min-h-screen bg-gray-100 p-4 md:p-8">
       <div className="mx-auto max-w-6xl">
         <h1 className="mb-8 text-3xl font-bold text-yellow-500 md:text-4xl">
           Painel Administrativo
         </h1>
-<section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
-  <h2 className="mb-2 text-2xl font-semibold">
-    Integração com o Mercado Livre
-  </h2>
+        <section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
+          <h2 className="mb-2 text-2xl font-semibold">
+            Importação em lote
+          </h2>
 
-  <p className="mb-5 text-gray-600">
-    Conecte sua conta e importe produtos automaticamente para a M&S Store.
-  </p>
+          <p className="mb-2 text-gray-600">
+            Cole um produto por linha usando o formato:
+          </p>
 
-  <div className="flex flex-col gap-3 sm:flex-row">
-    <button
-      type="button"
-      onClick={handleConnectMercadoLivre}
-      className="rounded-lg bg-yellow-500 px-5 py-3 font-bold text-black hover:bg-yellow-600"
-    >
-      Conectar Mercado Livre
-    </button>
+          <p className="mb-4 rounded-lg bg-gray-100 p-3 text-sm font-semibold">
+            Nome | Preço | URL da imagem | Link do produto | Link de afiliado
+          </p>
 
-    <button
-      type="button"
-      onClick={handleImportMercadoLivre}
-      disabled={mlLoading}
-      className="rounded-lg bg-blue-600 px-5 py-3 font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
-    >
-      {mlLoading ? "Importando produtos..." : "Importar produtos"}
-    </button>
-  </div>
+          <textarea
+            value={bulkProducts}
+            onChange={(event) => setBulkProducts(event.target.value)}
+            placeholder={
+              "Exemplo:\nFone Bluetooth | 129,90 | https://site.com/imagem.jpg | https://mercadolivre.com.br/produto | https://mercadolivre.com/sec/link-afiliado"
+            }
+            rows={9}
+            className="w-full rounded-lg border p-3 font-mono text-sm"
+          />
 
-  {mlMessage && (
-    <p className="mt-4 rounded-lg bg-gray-100 p-3 font-medium">
-      {mlMessage}
-    </p>
-  )}
-</section>
+          <button
+            type="button"
+            onClick={handleBulkImport}
+            disabled={bulkLoading}
+            className="mt-4 w-full rounded-lg bg-blue-600 p-3 font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {bulkLoading
+              ? "Importando produtos..."
+              : "Importar produtos em lote"}
+          </button>
+
+          {bulkMessage && (
+            <pre className="mt-4 whitespace-pre-wrap rounded-lg bg-gray-100 p-3 font-sans font-medium">
+              {bulkMessage}
+            </pre>
+          )}
+        </section>
+
         <section className="mb-10 rounded-xl bg-white p-5 shadow-lg md:p-8">
           <h2 className="mb-6 text-2xl font-semibold">
             {editingId ? "Editar Produto" : "Adicionar Produto"}
